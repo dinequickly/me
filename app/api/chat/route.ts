@@ -7,8 +7,10 @@ import { gateway } from "@ai-sdk/gateway";
 import fs from "fs/promises";
 import path from "path";
 import { nanoid } from "nanoid";
-import { createModel, createOrchestratorAgent } from "@/lib/agents";
+import { createModel, createOrchestratorAgent, discoverSkills } from "@/lib/agents";
 import { createTrace, addTraceEvent } from "@/lib/trace-store";
+import { createGoogleTools } from "@/lib/google-tools";
+import { auth } from "@/auth";
 
 export const maxDuration = 60;
 
@@ -75,7 +77,14 @@ export async function POST(req: Request) {
     model: string;
   } = await req.json();
 
-  const { soul, vibes } = await readMemory();
+  const [{ soul, vibes }, skills, session] = await Promise.all([
+    readMemory(),
+    discoverSkills([path.join(process.cwd(), ".agents/skills")]),
+    auth(),
+  ]);
+
+  const accessToken = (session as unknown as { accessToken?: string } | null)?.accessToken;
+  const googleTools = accessToken ? createGoogleTools(accessToken) : undefined;
 
   const model = createModel(modelId);
 
@@ -92,22 +101,30 @@ These files live on the human's computer and are updated automatically after eac
 
 You have a "research" tool. Use it whenever the question requires current or real-time information — news, prices, recent events, anything that may have changed since your training. For general knowledge, math, or coding you already know, answer directly.
 
-When using the research tool, provide a clear, specific task description so the research agent can work effectively.`;
+When using the research tool, provide a clear, specific task description so the research agent can work effectively.${googleTools ? `
+
+You have access to the user's Google account. Tools available: gmail_list_emails, gmail_get_email, gmail_send_email, calendar_list_events, calendar_create_event, drive_list_files, drive_get_file, docs_get_document, slides_get_presentation. Use these when the user asks about their email, calendar, files, or documents.` : ""}`;
 
   const isAnthropic = modelId.startsWith("anthropic/");
 
-  const agent = createOrchestratorAgent(model, systemPrompt, {
-    ...(isAnthropic && {
-      anthropic: {
-        thinking: { type: "enabled", budgetTokens: 15000 },
-      },
-    }),
-    gateway: {
-      byok: {
-        anthropic: [{ apiKey: process.env.ANTHROPIC_API_KEY }],
+  const agent = createOrchestratorAgent(
+    model,
+    systemPrompt,
+    skills,
+    {
+      ...(isAnthropic && {
+        anthropic: {
+          thinking: { type: "enabled", budgetTokens: 15000 },
+        },
+      }),
+      gateway: {
+        byok: {
+          anthropic: [{ apiKey: process.env.ANTHROPIC_API_KEY }],
+        },
       },
     },
-  });
+    googleTools
+  );
 
   // --- Trace collection ---
   const traceId = nanoid(10);
