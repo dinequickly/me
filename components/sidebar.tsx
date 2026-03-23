@@ -24,6 +24,7 @@ import {
   CheckCircle2Icon,
   BellIcon,
   CheckCheckIcon,
+  PlayIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSession, signIn, signOut } from "next-auth/react";
@@ -327,8 +328,8 @@ function IntegrationsPanel() {
       <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Connected accounts</p>
 
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
             {/* Google G logo */}
             <svg className="size-5 shrink-0" viewBox="0 0 24 24">
               <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -338,7 +339,7 @@ function IntegrationsPanel() {
             </svg>
             <div>
               <p className="text-sm font-medium text-zinc-200">Google</p>
-              <p className="text-xs text-zinc-500">
+              <p className="truncate text-xs text-zinc-500">
                 {status === "loading" ? "Loading…" : connected ? (session?.user?.email ?? "Connected") : "Gmail · Calendar · Drive · Docs · Slides"}
               </p>
             </div>
@@ -348,8 +349,17 @@ function IntegrationsPanel() {
             <div className="flex items-center gap-2">
               <CheckCircle2Icon className="size-4 text-emerald-500 shrink-0" />
               <button
-                className="rounded px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors"
+                className="rounded px-1.5 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+                onClick={() => signIn("google")}
+                title="Re-authenticate"
+                type="button"
+              >
+                <RefreshCwIcon className="size-3.5" />
+              </button>
+              <button
+                className="rounded px-1.5 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
                 onClick={() => signOut()}
+                title="Sign out"
                 type="button"
               >
                 <LogOutIcon className="size-3.5" />
@@ -546,6 +556,17 @@ function JobsPanelFull({ data, onRefresh, onEditJob, onNewJob }: {
                         ? <ToggleRightIcon className="size-4 text-green-400" />
                         : <ToggleLeftIcon className="size-4" />
                       }
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await fetch("/api/cron/scheduled");
+                        onRefresh();
+                      }}
+                      className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-green-400"
+                      title="Run now"
+                      type="button"
+                    >
+                      <PlayIcon className="size-3" />
                     </button>
                     <button onClick={() => onEditJob(job)} className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300" type="button">
                       <PencilIcon className="size-3" />

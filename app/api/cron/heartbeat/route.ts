@@ -1,12 +1,6 @@
 import { NextResponse } from "next/server";
 import { readCronConfig } from "@/lib/cron-config";
 import { recordBeat, getBeats } from "@/lib/heartbeat-store";
-import { startLocalCron } from "@/lib/local-cron";
-
-// Start local cron when this module loads in dev
-if (process.env.NODE_ENV === "development") {
-  startLocalCron();
-}
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");

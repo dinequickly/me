@@ -34,6 +34,10 @@ yarn-error.log*
 .env*
 .env.local
 
+# sensitive runtime data
+memory/google-tokens.json
+cron-config.json
+
 # vercel
 .vercel
 

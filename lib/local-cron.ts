@@ -26,6 +26,7 @@ async function syncJobSchedules() {
   for (const job of enabledJobs) {
     if (jobTasks.has(job.id)) continue;
 
+    console.log(`[local-cron] scheduling job "${job.name}" → ${job.schedule} (next run at :${job.schedule.split(" ")[0]} of each hour)`);
     const task = cron.schedule(job.schedule, async () => {
       // Re-read config each time in case it changed
       const current = await readCronConfig();

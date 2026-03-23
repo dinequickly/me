@@ -63,11 +63,13 @@ function createProviderModel(modelId: string): LanguageModel {
 
 /** Wrap a model id with schema-fix + devtools middleware. */
 export function createModel(modelId: string): LanguageModel {
+  const base = wrapLanguageModel({
+    model: createProviderModel(modelId) as Parameters<typeof wrapLanguageModel>[0]["model"],
+    middleware: schemaFixMiddleware,
+  });
+  if (process.env.NODE_ENV === "production") return base;
   return wrapLanguageModel({
-    model: wrapLanguageModel({
-      model: createProviderModel(modelId) as Parameters<typeof wrapLanguageModel>[0]["model"],
-      middleware: schemaFixMiddleware,
-    }),
+    model: base,
     middleware: devToolsMiddleware(),
   });
 }
