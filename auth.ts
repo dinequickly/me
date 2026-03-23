@@ -1,40 +1,25 @@
 import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
-
-const GOOGLE_SCOPES = [
-  "openid",
-  "email",
-  "profile",
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/drive",
-  "https://www.googleapis.com/auth/documents",
-  "https://www.googleapis.com/auth/presentations",
-].join(" ");
+import { authConfig } from "./auth.config";
+import { saveGoogleTokens } from "@/lib/google-token-store";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
-  providers: [
-    Google({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-      authorization: {
-        params: {
-          scope: GOOGLE_SCOPES,
-          access_type: "offline",
-          prompt: "consent",
-        },
-      },
-    }),
-  ],
+  ...authConfig,
   callbacks: {
     async jwt({ token, account }) {
       // First sign-in — persist tokens
       if (account) {
+        if (account.refresh_token && account.access_token && account.expires_at) {
+          saveGoogleTokens({
+            refreshToken: account.refresh_token,
+            accessToken: account.access_token,
+            expiresAt: account.expires_at,
+          }).catch(() => {});
+        }
         return {
           ...token,
           accessToken: account.access_token,
           refreshToken: account.refresh_token,
-          expiresAt: account.expires_at, // seconds
+          expiresAt: account.expires_at,
         };
       }
 

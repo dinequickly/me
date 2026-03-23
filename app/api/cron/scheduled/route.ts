@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readCronConfig, markJobRan } from "@/lib/cron-config";
+import { runBackgroundTask } from "@/lib/background-agent";
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -12,17 +13,13 @@ export async function GET(request: Request) {
 
   const config = await readCronConfig();
   const enabledJobs = config.jobs.filter((j) => j.enabled);
-
   const results: Array<{ id: string; name: string; status: string }> = [];
 
   for (const job of enabledJobs) {
+    const prompt = (job.payload?.prompt as string) || job.description || job.name;
     try {
-      console.log(`[scheduled] Running job "${job.name}" (${job.id})`, job.payload);
-
-      // TODO: dispatch to actual job handlers based on job.id or job.payload
-      // For now, just log and mark as ran
+      await runBackgroundTask(prompt, "cron", job.name);
       await markJobRan(job.id);
-
       results.push({ id: job.id, name: job.name, status: "ok" });
     } catch (error) {
       console.error(`[scheduled] Job "${job.name}" failed:`, error);

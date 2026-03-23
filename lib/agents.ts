@@ -12,6 +12,8 @@ import {
 } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { gateway } from "@ai-sdk/gateway";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import { z } from "zod";
 import { readCronConfig, writeCronConfig, type CronConfig, type CronJob } from "./cron-config";
@@ -45,11 +47,25 @@ const schemaFixMiddleware: LanguageModelMiddleware = {
   }),
 };
 
-/** Wrap a gateway model id with schema-fix + devtools middleware. */
+/** Create the appropriate provider model based on model ID prefix. */
+function createProviderModel(modelId: string): LanguageModel {
+  if (modelId.startsWith("anthropic/")) {
+    const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    return anthropic(modelId.replace("anthropic/", ""));
+  }
+  if (modelId.startsWith("openai/")) {
+    const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    return openai(modelId.replace("openai/", ""));
+  }
+  // Everything else goes through gateway
+  return gateway(modelId as Parameters<typeof gateway>[0]);
+}
+
+/** Wrap a model id with schema-fix + devtools middleware. */
 export function createModel(modelId: string): LanguageModel {
   return wrapLanguageModel({
     model: wrapLanguageModel({
-      model: gateway(modelId as Parameters<typeof gateway>[0]),
+      model: createProviderModel(modelId) as Parameters<typeof wrapLanguageModel>[0]["model"],
       middleware: schemaFixMiddleware,
     }),
     middleware: devToolsMiddleware(),
@@ -81,7 +97,7 @@ Put the raw content directly in the "content" field. Do NOT wrap it in markdown 
 // Web search tool (used by the research subagent)
 // ---------------------------------------------------------------------------
 
-const webSearchTool = tool({
+export const webSearchTool = tool({
   description:
     "Search the web for current, real-time information. Use this for up-to-date news, live data, or recent events.",
   inputSchema: z.object({
@@ -390,7 +406,7 @@ function buildSkillsPrompt(skills: SkillMetadata[]): string {
   return `\n\n## Available Skills\n\nUse the \`loadSkill\` tool when the user's request matches one of these:\n${list}`;
 }
 
-function createLoadSkillTool(skills: SkillMetadata[]) {
+export function createLoadSkillTool(skills: SkillMetadata[]) {
   return tool({
     description: "Load a skill to get specialized instructions for a task. Call this when the user's request matches a skill's description.",
     inputSchema: z.object({
@@ -414,7 +430,7 @@ function createLoadSkillTool(skills: SkillMetadata[]) {
 
 const stripAnsi = (str: string) => str.replace(/\x1B\[[0-9;]*[mGKHF]/g, "");
 
-const bashTool = tool({
+export const bashTool = tool({
   description: "Execute a bash command and return stdout/stderr. Use for running scripts, code, file operations, or any shell command.",
   inputSchema: z.object({
     command: z.string().describe("The bash command to execute"),
@@ -445,7 +461,7 @@ const bashTool = tool({
 // ReadFile tool — read files relative to cwd
 // ---------------------------------------------------------------------------
 
-const readFileTool = tool({
+export const readFileTool = tool({
   description: "Read a file from the filesystem and return its contents. Paths are resolved relative to the project root.",
   inputSchema: z.object({
     path: z.string().describe("Path to the file (absolute or relative to project root)"),
@@ -459,6 +475,49 @@ const readFileTool = tool({
       return { content };
     } catch (err) {
       return { error: String(err) };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Memory tool — lets the agent read/update soul.md and vibes.md directly
+// ---------------------------------------------------------------------------
+
+const MEMORY_DIR = path.join(process.cwd(), "memory");
+
+export const memoryTool = tool({
+  description: `Read or update your persistent memory files (soul.md and vibes.md). These define your personality and relationship with the user.
+- "read": Read both memory files
+- "update_soul": Rewrite soul.md with new content
+- "update_vibes": Rewrite vibes.md with new content
+Update these whenever you learn something meaningful about the user, their preferences, your relationship dynamic, or when the user asks you to remember something. Don't update on every message — only when there's something worth persisting.`,
+  inputSchema: z.object({
+    action: z.enum(["read", "update_soul", "update_vibes"]),
+    content: z.string().optional().describe("New file content (required for update actions)"),
+  }),
+  execute: async (input) => {
+    switch (input.action) {
+      case "read": {
+        try {
+          const [soul, vibes] = await Promise.all([
+            fs.readFile(path.join(MEMORY_DIR, "soul.md"), "utf-8"),
+            fs.readFile(path.join(MEMORY_DIR, "vibes.md"), "utf-8"),
+          ]);
+          return { soul, vibes };
+        } catch (err) {
+          return { error: String(err) };
+        }
+      }
+      case "update_soul": {
+        if (!input.content) return { error: "content is required" };
+        await fs.writeFile(path.join(MEMORY_DIR, "soul.md"), input.content, "utf-8");
+        return { message: "soul.md updated" };
+      }
+      case "update_vibes": {
+        if (!input.content) return { error: "content is required" };
+        await fs.writeFile(path.join(MEMORY_DIR, "vibes.md"), input.content, "utf-8");
+        return { message: "vibes.md updated" };
+      }
     }
   },
 });
@@ -483,7 +542,7 @@ export function createOrchestratorAgent(
     id: "orchestrator",
     model,
     instructions,
-    tools: { research, artifact: artifactTool, cron_manage: cronManageTool, skill_manage: skillManageTool, browser: browserTool, bash: bashTool, readFile: readFileTool, loadSkill, ...extraTools },
+    tools: { research, artifact: artifactTool, cron_manage: cronManageTool, skill_manage: skillManageTool, memory: memoryTool, browser: browserTool, bash: bashTool, readFile: readFileTool, loadSkill, ...extraTools },
     stopWhen: stepCountIs(20),
     providerOptions,
   });
@@ -502,6 +561,7 @@ const _typingAgent = new ToolLoopAgent({
     artifact: artifactTool,
     cron_manage: cronManageTool,
     skill_manage: skillManageTool,
+    memory: memoryTool,
     browser: browserTool,
     bash: bashTool,
     readFile: readFileTool,

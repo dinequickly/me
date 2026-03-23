@@ -22,6 +22,8 @@ import {
   LogInIcon,
   LogOutIcon,
   CheckCircle2Icon,
+  BellIcon,
+  CheckCheckIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSession, signIn, signOut } from "next-auth/react";
@@ -36,12 +38,21 @@ type CronJob = {
   lastRun?: string;
 };
 type Skill = { name: string; description: string; content: string };
+type Notification = {
+  id: string;
+  timestamp: string;
+  source: "heartbeat" | "cron";
+  jobName: string;
+  result: string;
+  read: boolean;
+};
 
 type SidebarData = {
   chats: Chat[];
   cron: {
     heartbeatEnabled: boolean;
     heartbeatIntervalMinutes: number;
+    heartbeatPrompt: string;
     jobs: CronJob[];
   };
   heartbeat: {
@@ -49,9 +60,10 @@ type SidebarData = {
     totalBeats: number;
   };
   skills: Skill[];
+  notifications: Notification[];
 };
 
-type Tab = "chats" | "jobs" | "skills" | "integrations";
+type Tab = "chats" | "jobs" | "skills" | "integrations" | "notifications";
 type FullscreenView =
   | null
   | "jobs"
@@ -149,12 +161,21 @@ export function Sidebar() {
         <TabButton active={activeTab === "jobs"} icon={BriefcaseIcon} label="Jobs" onClick={() => { setActiveTab("jobs"); setFullscreen("jobs"); }} />
         <TabButton active={activeTab === "skills"} icon={ZapIcon} label="Skills" onClick={() => { setActiveTab("skills"); setFullscreen("skills"); }} />
         <TabButton active={activeTab === "integrations"} icon={PlugZapIcon} label="" onClick={() => { setActiveTab("integrations"); setFullscreen(null); }} />
+        <div className="relative">
+          <TabButton active={activeTab === "notifications"} icon={BellIcon} label="" onClick={() => { setActiveTab("notifications"); setFullscreen(null); }} />
+          {(data?.notifications?.filter(n => !n.read).length ?? 0) > 0 && (
+            <span className="pointer-events-none absolute right-1 top-1 flex size-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] font-bold text-white">
+              {data!.notifications.filter(n => !n.read).length}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === "chats" && <ChatsPanel data={data} />}
         {activeTab === "integrations" && <IntegrationsPanel />}
+        {activeTab === "notifications" && <NotificationsPanel data={data} onRefresh={fetchData} />}
       </div>
 
       {/* Fullscreen overlay */}
@@ -218,6 +239,77 @@ export function Sidebar() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notifications panel
+// ---------------------------------------------------------------------------
+
+function NotificationsPanel({ data, onRefresh }: { data: SidebarData | null; onRefresh: () => void }) {
+  const notifications = data?.notifications ?? [];
+  const unread = notifications.filter(n => !n.read).length;
+
+  const markAll = async () => {
+    await fetch("/api/sidebar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_all_read" }) });
+    onRefresh();
+  };
+
+  const markOne = async (id: string) => {
+    await fetch("/api/sidebar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_read", id }) });
+    onRefresh();
+  };
+
+  if (notifications.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
+        <BellIcon className="size-6 text-zinc-600" />
+        <p className="text-xs text-zinc-500">No notifications yet</p>
+        <p className="text-xs text-zinc-600">Background tasks will show up here</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {unread > 0 && (
+        <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
+          <span className="text-xs text-zinc-500">{unread} unread</span>
+          <button
+            className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+            onClick={markAll}
+            type="button"
+          >
+            <CheckCheckIcon className="size-3.5" />
+            Mark all read
+          </button>
+        </div>
+      )}
+      {notifications.map((n) => (
+        <div
+          key={n.id}
+          className={cn(
+            "border-b border-zinc-800 px-3 py-3 cursor-pointer hover:bg-zinc-900 transition-colors",
+            !n.read && "bg-zinc-900/50"
+          )}
+          onClick={() => !n.read && markOne(n.id)}
+        >
+          <div className="flex items-start justify-between gap-2 mb-1">
+            <div className="flex items-center gap-1.5">
+              {!n.read && <span className="size-1.5 rounded-full bg-blue-500 shrink-0 mt-0.5" />}
+              <span className="text-xs font-medium text-zinc-300 truncate">{n.jobName}</span>
+            </div>
+            <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+              n.source === "heartbeat" ? "bg-zinc-800 text-zinc-400" : "bg-zinc-800 text-blue-400"
+            )}>
+              {n.source}
+            </span>
+          </div>
+          <p className="text-xs text-zinc-500 leading-relaxed line-clamp-3">{n.result}</p>
+          <p className="mt-1 text-[10px] text-zinc-600">{new Date(n.timestamp).toLocaleString()}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -410,6 +502,17 @@ function JobsPanelFull({ data, onRefresh, onEditJob, onNewJob }: {
               onRefresh();
             }}
           />
+          <HeartbeatPromptEditor
+            value={data.cron.heartbeatPrompt}
+            onSave={async (v) => {
+              await fetch("/api/sidebar/heartbeat", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ heartbeatPrompt: v }),
+              });
+              onRefresh();
+            }}
+          />
           <StatusRow label="Total beats" value={<span className="text-zinc-400">{data.heartbeat.totalBeats}</span>} />
           {data.heartbeat.lastBeat && (
             <StatusRow label="Last beat" value={<span className="text-zinc-400">{formatTime(data.heartbeat.lastBeat.timestamp)}</span>} />
@@ -501,6 +604,56 @@ function HeartbeatIntervalEditor({ value, onSave }: { value: number; onSave: (v:
         <span className="text-zinc-500">min</span>
         <button onClick={() => { onSave(draft); setEditing(false); }} className="rounded bg-zinc-700 px-1.5 py-0.5 text-zinc-200 hover:bg-zinc-600" type="button">
           <SaveIcon className="size-2.5" />
+        </button>
+        <button onClick={() => setEditing(false)} className="text-zinc-500 hover:text-zinc-300" type="button">
+          <XIcon className="size-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat prompt inline editor
+// ---------------------------------------------------------------------------
+
+function HeartbeatPromptEditor({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  if (!editing) {
+    return (
+      <div className="flex items-start justify-between gap-2 text-xs">
+        <span className="text-zinc-500 shrink-0">Prompt</span>
+        <button
+          onClick={() => { setDraft(value); setEditing(true); }}
+          className="flex items-center gap-1 text-right text-zinc-400 hover:text-zinc-200 min-w-0"
+          type="button"
+        >
+          <span className="truncate max-w-[140px]">{value}</span>
+          <PencilIcon className="size-2.5 shrink-0" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 text-xs">
+      <span className="text-zinc-500">Prompt</span>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={3}
+        className="w-full rounded bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs text-zinc-200 resize-none focus:outline-none focus:border-zinc-500"
+      />
+      <div className="flex items-center gap-1 justify-end">
+        <button
+          onClick={() => { onSave(draft); setEditing(false); }}
+          className="rounded bg-zinc-700 px-2 py-0.5 text-zinc-200 hover:bg-zinc-600 flex items-center gap-1"
+          type="button"
+        >
+          <SaveIcon className="size-2.5" />
+          Save
         </button>
         <button onClick={() => setEditing(false)} className="text-zinc-500 hover:text-zinc-300" type="button">
           <XIcon className="size-3" />

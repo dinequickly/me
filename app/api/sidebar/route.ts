@@ -4,9 +4,9 @@ import path from "path";
 import { readCronConfig } from "@/lib/cron-config";
 import { getBeats } from "@/lib/heartbeat-store";
 import { discoverSkills } from "@/lib/agents";
+import { getNotifications, markRead, markAllRead } from "@/lib/notification-store";
 
 export async function GET() {
-  // Load all sidebar data in parallel
   const [cronConfig, skills, generations] = await Promise.all([
     readCronConfig(),
     discoverSkills([path.join(process.cwd(), ".agents/skills")]),
@@ -20,6 +20,7 @@ export async function GET() {
     cron: {
       heartbeatEnabled: cronConfig.heartbeatEnabled,
       heartbeatIntervalMinutes: cronConfig.heartbeatIntervalMinutes,
+      heartbeatPrompt: cronConfig.heartbeatPrompt,
       jobs: cronConfig.jobs,
     },
     heartbeat: {
@@ -27,7 +28,15 @@ export async function GET() {
       totalBeats: beats.length,
     },
     skills: skills.map((s) => ({ name: s.name, description: s.description, content: s.content })),
+    notifications: getNotifications(),
   });
+}
+
+export async function POST(request: Request) {
+  const { action, id } = await request.json();
+  if (action === "mark_read" && id) markRead(id);
+  if (action === "mark_all_read") markAllRead();
+  return NextResponse.json({ ok: true });
 }
 
 async function loadGenerations() {
@@ -38,7 +47,6 @@ async function loadGenerations() {
     );
     const data = JSON.parse(raw);
     const runs: Array<{ id: string; started_at: string }> = data.runs ?? [];
-    // Return most recent first, limited to 50
     return runs
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 50)

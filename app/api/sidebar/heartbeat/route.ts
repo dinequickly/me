@@ -11,6 +11,9 @@ export async function PATCH(req: Request) {
   if (typeof body.heartbeatIntervalMinutes === "number" && body.heartbeatIntervalMinutes > 0) {
     config.heartbeatIntervalMinutes = body.heartbeatIntervalMinutes;
   }
+  if (typeof body.heartbeatPrompt === "string" && body.heartbeatPrompt.trim()) {
+    config.heartbeatPrompt = body.heartbeatPrompt.trim();
+  }
 
   await writeCronConfig(config);
   return NextResponse.json({ ok: true });

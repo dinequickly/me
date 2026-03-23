@@ -1,9 +1,7 @@
 import {
   createAgentUIStreamResponse,
-  generateText,
   UIMessage,
 } from "ai";
-import { gateway } from "@ai-sdk/gateway";
 import fs from "fs/promises";
 import path from "path";
 import { nanoid } from "nanoid";
@@ -16,10 +14,6 @@ export const maxDuration = 60;
 
 const MEMORY_DIR = path.join(process.cwd(), "memory");
 
-// ---------------------------------------------------------------------------
-// Memory helpers
-// ---------------------------------------------------------------------------
-
 async function readMemory() {
   const [soul, vibes] = await Promise.all([
     fs.readFile(path.join(MEMORY_DIR, "soul.md"), "utf-8"),
@@ -28,54 +22,51 @@ async function readMemory() {
   return { soul, vibes };
 }
 
-async function updateMemory(modelId: string, conversation: string) {
-  const { soul, vibes } = await readMemory();
-
-  const { text } = await generateText({
-    model: gateway(modelId as Parameters<typeof gateway>[0]),
-    prompt: `You have two persistent memory files. Based on this conversation, rewrite them if anything is worth updating. Return ONLY valid JSON with keys "soul" and "vibes" — each value is the full new file content as a string. If nothing needs updating, return the originals unchanged.
-
-Current soul.md:
-${soul}
-
-Current vibes.md:
-${vibes}
-
-Recent conversation:
-${conversation}
-
-Return JSON only, no markdown, no explanation.`,
-  });
-
-  try {
-    const updates = JSON.parse(text.trim());
-    if (updates.soul && updates.vibes) {
-      await Promise.all([
-        fs.writeFile(path.join(MEMORY_DIR, "soul.md"), updates.soul, "utf-8"),
-        fs.writeFile(
-          path.join(MEMORY_DIR, "vibes.md"),
-          updates.vibes,
-          "utf-8"
-        ),
-      ]);
-    }
-  } catch {
-    // malformed JSON — skip silently
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
 export async function POST(req: Request) {
   const {
-    messages,
+    messages: rawMessages,
     model: modelId,
   }: {
     messages: UIMessage[];
     model: string;
   } = await req.json();
+
+  // The SDK's SSRF validator blocks data: URLs and localhost in file parts.
+  // Save images to disk and pass the path to the model as text so it can
+  // read the file with its readFile tool if needed.
+  const messages = await Promise.all(
+    rawMessages.map(async (msg) => ({
+      ...msg,
+      parts: (
+        await Promise.all(
+          msg.parts.map(async (part) => {
+            if (
+              part.type === "file" &&
+              "url" in part &&
+              typeof part.url === "string" &&
+              part.url.startsWith("data:")
+            ) {
+              const base64 = part.url.split(",")[1];
+              if (!base64) return null;
+              const id = nanoid(12);
+              const ext = (part.mediaType as string)?.split("/")[1]?.replace(/\+.*/, "") ?? "bin";
+              const tmpPath = path.join("/tmp", `upload-${id}.${ext}`);
+              await fs.writeFile(tmpPath, Buffer.from(base64, "base64"));
+              return {
+                type: "text" as const,
+                text: `[User attached an image: ${tmpPath} (${part.mediaType})]`,
+              };
+            }
+            return part;
+          })
+        )
+      ).filter(Boolean),
+    }))
+  ) as UIMessage[];
 
   const [{ soul, vibes }, skills, session] = await Promise.all([
     readMemory(),
@@ -88,7 +79,7 @@ export async function POST(req: Request) {
 
   const model = createModel(modelId);
 
-  const systemPrompt = `You are a helpful assistant with persistent memory and a research tool.
+  const systemPrompt = `You are a helpful assistant with persistent memory and tools.
 
 --- soul.md ---
 ${soul}
@@ -97,7 +88,7 @@ ${soul}
 ${vibes}
 ---
 
-These files live on the human's computer and are updated automatically after each conversation.
+You have a "memory" tool that lets you read and update soul.md and vibes.md at any time. Use it when you learn something meaningful about the user, their preferences, or your relationship. Don't update on every message — only when there's something worth persisting for future conversations.
 
 You have a "research" tool. Use it whenever the question requires current or real-time information — news, prices, recent events, anything that may have changed since your training. For general knowledge, math, or coding you already know, answer directly.
 
@@ -111,18 +102,9 @@ You have access to the user's Google account. Tools available: gmail_list_emails
     model,
     systemPrompt,
     skills,
-    {
-      ...(isAnthropic && {
-        anthropic: {
-          thinking: { type: "enabled", budgetTokens: 15000 },
-        },
-      }),
-      gateway: {
-        byok: {
-          anthropic: [{ apiKey: process.env.ANTHROPIC_API_KEY }],
-        },
-      },
-    },
+    isAnthropic
+      ? { anthropic: { thinking: { type: "enabled", budgetTokens: 15000 } } }
+      : undefined,
     googleTools
   );
 
@@ -146,30 +128,14 @@ You have access to the user's Google account. Tools available: gmail_list_emails
       });
     },
 
-    onFinish({ responseMessage, finishReason }) {
-      // Extract final text from response for memory update
-      const finalText = responseMessage.parts
-        .filter((p): p is { type: "text"; text: string } => p.type === "text")
-        .map((p) => p.text)
-        .join("\n");
-
+    onFinish() {
       addTraceEvent(traceId, {
         kind: "agent-finish",
         timestamp: Date.now(),
-        totalSteps: 0, // not available in this callback
+        totalSteps: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
       });
-
-      // Update memory (fire and forget)
-      const lastUserMessage = [...messages]
-        .reverse()
-        .find((m) => m.role === "user");
-      const lastText = lastUserMessage?.parts?.find(
-        (p) => p.type === "text"
-      ) as { text: string } | undefined;
-      const conversation = `Human: ${lastText?.text ?? ""}\nAssistant: ${finalText}`;
-      updateMemory(modelId, conversation).catch(() => {});
     },
 
     sendSources: true,

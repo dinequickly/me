@@ -1,0 +1,15 @@
+{
+  "heartbeatIntervalMinutes": 5,
+  "heartbeatEnabled": true,
+  "heartbeatPrompt": "Check if there's anything notable happening. If you have access to Gmail or Calendar, look for anything urgent or time-sensitive. Be brief.",
+  "jobs": [
+    {
+      "id": "daily-email-checker-mn3ly3ha",
+      "name": "daily email checker",
+      "description": "check my emial and send maxwellmoroz10@gmail.com an email summary",
+      "schedule": "5 * * * *",
+      "enabled": true,
+      "lastRun": "2026-03-23T20:06:24.772Z"
+    }
+  ]
+}

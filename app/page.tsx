@@ -153,6 +153,13 @@ const models = [
     name: "GPT-5.4",
     providers: ["openai"],
   },
+  {
+    chef: "OpenAI",
+    chefSlug: "openai",
+    id: "openai/gpt-5.4-mini",
+    name: "GPT-5.4 Mini",
+    providers: ["openai"],
+  },
 ];
 
 const suggestions = [
@@ -716,87 +723,253 @@ function ResearchToolPart({ part }: { part: any }) {
 }
 
 // ---------------------------------------------------------------------------
-// Live browser stream hook
+// Live browser stream hook (also buffers frames for replay)
 // ---------------------------------------------------------------------------
+
+type RecordedFrame = { t: number; data: string };
 
 function useBrowserStream() {
   const [frame, setFrame] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const framesRef = useRef<RecordedFrame[]>([]);
+  const sessionStartRef = useRef<number>(0);
+  const [recordedFrames, setRecordedFrames] = useState<RecordedFrame[]>([]);
 
   useEffect(() => {
     const es = new EventSource("/api/browser/stream");
-    eventSourceRef.current = es;
 
     es.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === "frame") {
           setFrame(msg.data);
+          if (sessionStartRef.current > 0) {
+            framesRef.current.push({
+              t: Date.now() - sessionStartRef.current,
+              data: msg.data,
+            });
+          }
         } else if (msg.type === "status") {
-          setBrowserOpen(msg.status === "open");
-          if (msg.status === "closed") setFrame(null);
+          if (msg.status === "open") {
+            setBrowserOpen(true);
+            framesRef.current = [];
+            sessionStartRef.current = Date.now();
+            setRecordedFrames([]);
+          } else {
+            setBrowserOpen(false);
+            setFrame(null);
+            // Freeze recorded frames for replay
+            if (framesRef.current.length > 0) {
+              setRecordedFrames([...framesRef.current]);
+            }
+          }
         }
       } catch {
         // ignore
       }
     };
 
-    es.onerror = () => {
-      // Auto-reconnect is built into EventSource
-    };
-
-    return () => {
-      es.close();
-      eventSourceRef.current = null;
-    };
+    return () => es.close();
   }, []);
 
-  return { frame, browserOpen };
+  return { frame, browserOpen, recordedFrames };
 }
 
 // ---------------------------------------------------------------------------
-// Browser live preview panel
+// Browser live preview panel with replay
 // ---------------------------------------------------------------------------
 
-function BrowserPanel({ frame, onClose }: { frame: string | null; onClose: () => void }) {
+function BrowserPanel({
+  frame,
+  browserOpen,
+  recordedFrames,
+  onClose,
+}: {
+  frame: string | null;
+  browserOpen: boolean;
+  recordedFrames: RecordedFrame[];
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"live" | "replay">("live");
+  const [replayIdx, setReplayIdx] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const playTimerRef = useRef<number>(0);
+
+  // Switch to live when browser opens
+  useEffect(() => {
+    if (browserOpen) setMode("live");
+  }, [browserOpen]);
+
+  // Auto-switch to replay when browser closes and we have frames
+  useEffect(() => {
+    if (!browserOpen && recordedFrames.length > 0 && mode === "live") {
+      setMode("replay");
+      setReplayIdx(0);
+      setPlaying(false);
+    }
+  }, [browserOpen, recordedFrames.length, mode]);
+
+  // Playback timer
+  useEffect(() => {
+    if (!playing || mode !== "replay" || recordedFrames.length === 0) return;
+
+    const tick = () => {
+      setReplayIdx((prev) => {
+        const next = prev + 1;
+        if (next >= recordedFrames.length) {
+          setPlaying(false);
+          return recordedFrames.length - 1;
+        }
+        // Schedule next frame based on actual time deltas
+        const delay = recordedFrames[next].t - recordedFrames[prev].t;
+        playTimerRef.current = window.setTimeout(tick, Math.min(delay, 200));
+        return next;
+      });
+    };
+
+    playTimerRef.current = window.setTimeout(tick, 50);
+    return () => window.clearTimeout(playTimerRef.current);
+  }, [playing, mode, recordedFrames]);
+
+  const replayFrame =
+    mode === "replay" && recordedFrames.length > 0
+      ? recordedFrames[replayIdx]?.data
+      : null;
+
+  const displayFrame = mode === "live" ? frame : replayFrame;
+
+  const durationMs =
+    recordedFrames.length > 0
+      ? recordedFrames[recordedFrames.length - 1].t
+      : 0;
+  const currentMs =
+    mode === "replay" && recordedFrames.length > 0
+      ? recordedFrames[replayIdx]?.t ?? 0
+      : 0;
+
   return (
     <div className="flex h-full flex-col bg-zinc-950 border-l border-zinc-800">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 shrink-0">
         <div className="flex items-center gap-2">
           <GlobeIcon className="size-4 text-blue-400" />
-          <span className="text-sm font-medium text-zinc-200">Live Browser</span>
-          <span className="relative flex size-2">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-green-400 opacity-75" />
-            <span className="relative inline-flex size-2 rounded-full bg-green-500" />
+          <span className="text-sm font-medium text-zinc-200">
+            {mode === "live" ? "Live Browser" : "Session Replay"}
           </span>
+          {mode === "live" && browserOpen && (
+            <span className="relative flex size-2">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex size-2 rounded-full bg-green-500" />
+            </span>
+          )}
         </div>
-        <button
-          className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-          onClick={onClose}
-          type="button"
-        >
-          <XIcon className="size-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Toggle between live/replay when replay is available */}
+          {recordedFrames.length > 0 && (
+            <button
+              className={cn(
+                "rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
+                mode === "replay"
+                  ? "bg-blue-500/20 text-blue-400"
+                  : "text-zinc-500 hover:text-zinc-300"
+              )}
+              onClick={() => {
+                if (mode === "live") {
+                  setMode("replay");
+                  setReplayIdx(0);
+                  setPlaying(false);
+                } else {
+                  setMode("live");
+                }
+              }}
+              type="button"
+            >
+              {mode === "replay" ? "Replay" : "Replay"}
+            </button>
+          )}
+          <button
+            className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+            onClick={onClose}
+            type="button"
+          >
+            <XIcon className="size-4" />
+          </button>
+        </div>
       </div>
-      {/* Frame */}
+
+      {/* Frame display */}
       <div className="flex-1 overflow-hidden bg-black flex items-center justify-center">
-        {frame ? (
+        {displayFrame ? (
           <img
-            src={`data:image/jpeg;base64,${frame}`}
-            alt="Live browser view"
+            src={`data:image/jpeg;base64,${displayFrame}`}
+            alt={mode === "live" ? "Live browser view" : "Replay frame"}
             className="max-w-full max-h-full object-contain"
           />
         ) : (
           <div className="text-zinc-600 text-sm flex flex-col items-center gap-2">
             <GlobeIcon className="size-8 text-zinc-700" />
-            <span>Waiting for browser...</span>
+            <span>{mode === "live" ? "Waiting for browser..." : "No frames"}</span>
           </div>
         )}
       </div>
+
+      {/* Replay controls */}
+      {mode === "replay" && recordedFrames.length > 0 && (
+        <div className="shrink-0 border-t border-zinc-800 px-3 py-2 space-y-1.5">
+          {/* Scrubber */}
+          <input
+            type="range"
+            min={0}
+            max={recordedFrames.length - 1}
+            value={replayIdx}
+            onChange={(e) => {
+              setReplayIdx(Number(e.target.value));
+              setPlaying(false);
+            }}
+            className="w-full h-1 appearance-none bg-zinc-800 rounded-full cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-400"
+          />
+          {/* Time + controls */}
+          <div className="flex items-center justify-between text-[11px] text-zinc-500">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (playing) {
+                    setPlaying(false);
+                    window.clearTimeout(playTimerRef.current);
+                  } else {
+                    // If at end, restart
+                    if (replayIdx >= recordedFrames.length - 1) setReplayIdx(0);
+                    setPlaying(true);
+                  }
+                }}
+                className="rounded px-1.5 py-0.5 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 font-medium"
+                type="button"
+              >
+                {playing ? "Pause" : "Play"}
+              </button>
+              <button
+                onClick={() => { setReplayIdx(0); setPlaying(false); }}
+                className="text-zinc-500 hover:text-zinc-300"
+                type="button"
+              >
+                Reset
+              </button>
+            </div>
+            <span className="tabular-nums">
+              {formatMs(currentMs)} / {formatMs(durationMs)}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function formatMs(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -805,15 +978,15 @@ function BrowserPanel({ frame, onClose }: { frame: string | null; onClose: () =>
 
 const Example = () => {
   const { data: session } = useSession();
-  const [model, setModel] = useState<string>("anthropic/claude-haiku-4.5");
+  const [model, setModel] = useState<string>("openai/gpt-5.4-mini");
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [text, setText] = useState<string>("");
   const [panelOpen, setPanelOpen] = useState(false);
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [browserPanelDismissed, setBrowserPanelDismissed] = useState(false);
 
-  const { frame: browserFrame, browserOpen } = useBrowserStream();
-  const showBrowserPanel = browserOpen && !browserPanelDismissed;
+  const { frame: browserFrame, browserOpen, recordedFrames } = useBrowserStream();
+  const showBrowserPanel = (browserOpen || recordedFrames.length > 0) && !browserPanelDismissed;
 
   // Re-open browser panel when a new browser session starts
   const prevBrowserOpen = useRef(false);
@@ -1116,7 +1289,7 @@ const Example = () => {
       {/* Browser live preview — takes priority over artifact panel */}
       {showBrowserPanel ? (
         <div className="w-[45%] shrink-0 overflow-hidden">
-          <BrowserPanel frame={browserFrame} onClose={() => setBrowserPanelDismissed(true)} />
+          <BrowserPanel frame={browserFrame} browserOpen={browserOpen} recordedFrames={recordedFrames} onClose={() => setBrowserPanelDismissed(true)} />
         </div>
       ) : panelOpen && activeArtifact ? (
         <div className="w-[45%] shrink-0 overflow-hidden border-l">
